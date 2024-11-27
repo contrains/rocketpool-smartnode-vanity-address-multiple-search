@@ -154,8 +154,8 @@ func findVanitySalt(c *cli.Context) error {
 
                 for j := range foundAddresses {
                     if foundAddresses[j].targetPrefix.prefix == matchingPrefix.prefix {
-                        foundAddresses[j].address := foundAddress
-                        foundAddresses[j].salt := foundSalt
+                        foundAddresses[j].address = foundAddress
+                        foundAddresses[j].salt = foundSalt
                         break
                     }
                 }
