@@ -496,7 +496,7 @@ func RegisterCommands(app *cli.App, name string, aliases []string) {
 				Usage:     "Search for a custom vanity minipool address",
 				UsageText: "rocketpool minipool find-vanity-address [options]",
 				Flags: []cli.Flag{
-					cli.StringFlag{
+					cli.StringSliceFlag{
 						Name:  "prefix, p",
 						Usage: "The prefix of the address to search for (must start with 0x)",
 					},
