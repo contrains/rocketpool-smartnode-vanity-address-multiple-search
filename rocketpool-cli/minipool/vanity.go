@@ -152,8 +152,6 @@ func findVanitySalt(c *cli.Context) error {
 			if foundSalt != nil {
 				mu.Lock()
 
-                var index big.Int
-
                 for j := range foundAddresses {
                     if foundAddresses[j].targetPrefix.prefix == matchingPrefix.prefix {
                         foundAddresses[j].address := foundAddress
