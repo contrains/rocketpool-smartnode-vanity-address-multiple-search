@@ -18,6 +18,18 @@ import (
 	cliutils "github.com/rocket-pool/smartnode/shared/utils/cli"
 )
 
+type targetPrefixT struct {
+    prefix *big.Int
+    shiftAmount uint
+}
+
+type vanityAddressT struct {
+    address common.Address
+    prefix string
+    targetPrefix targetPrefixT
+    salt *big.Int
+}
+
 func findVanitySalt(c *cli.Context) error {
 
 	// Get RP client
@@ -28,17 +40,31 @@ func findVanitySalt(c *cli.Context) error {
 	defer rp.Close()
 
 	// Get the target prefix
-	prefix := c.String("prefix")
-	if prefix == "" {
-		prefix = cliutils.Prompt("Please specify the address prefix you would like to search for (must start with 0x):", "^0x[0-9a-fA-F]+$", "Invalid hex string")
-	}
-	if !strings.HasPrefix(prefix, "0x") {
-		return fmt.Errorf("Prefix must start with 0x.")
-	}
-	targetPrefix, success := big.NewInt(0).SetString(prefix, 0)
-	if !success {
-		return fmt.Errorf("Invalid prefix: %s", prefix)
-	}
+	prefixes := c.StringSlice("prefix")
+	targetPrefixes := []targetPrefixT{}
+	foundAddresses := []vanityAddressT{}
+
+    if len(prefixes) == 0 {
+        prefix = cliutils.Prompt("Please specify the address prefix you would like to search for (must start with 0x):", "^0x[0-9a-fA-F]+$", "Invalid hex string")
+        append(prefixes, prefix)
+    }
+
+	for _, prefix := range prefixes {
+	    if prefix == "" {
+	        continue
+        }
+
+        if !strings.HasPrefix(prefix, "0x") {
+            return fmt.Errorf("Prefix must start with 0x: %s", prefix)
+        }
+
+        targetPrefix, success := big.NewInt(0).SetString(prefix, 0)
+        if !success {
+            return fmt.Errorf("Invalid prefix: %s", prefix)
+        }
+        append(targetPrefixes, targetPrefixT{ prefix: targetPrefix, shiftAmount: uint(42 - len(prefix))})
+        append(foundAddresses, vanityAddressT{ prefix: prefix, targetPrefix: targetPrefixes[-1] })
+    }
 
 	// Get the starting salt
 	saltString := c.String("salt")
@@ -103,11 +129,12 @@ func findVanitySalt(c *cli.Context) error {
 	nodeAddress := vanityArtifacts.NodeAddress.Bytes()
 	minipoolFactoryAddress := vanityArtifacts.MinipoolFactoryAddress
 	initHash := vanityArtifacts.InitHash.Bytes()
-	shiftAmount := uint(42 - len(prefix))
+	targetPrefixesPtr := &targetPrefixes
 
 	// Run the search
 	fmt.Printf("Running with %d threads.\n", threads)
 
+    mu := new(sync.Mutex)
 	wg := new(sync.WaitGroup)
 	wg.Add(threads)
 	stop := false
@@ -120,12 +147,35 @@ func findVanitySalt(c *cli.Context) error {
 		workerSalt := big.NewInt(0).Add(salt, saltOffset)
 
 		go func(i int) {
-			foundSalt, foundAddress := runWorker(i == 0, stopPtr, targetPrefix, nodeAddress, minipoolFactoryAddress, initHash, workerSalt, int64(threads), shiftAmount)
+			foundSalt, foundAddress, matchingPrefix := runWorker(i == 0, stopPtr, targetPrefixes, nodeAddress, minipoolFactoryAddress, initHash, workerSalt, int64(threads))
+
 			if foundSalt != nil {
-				fmt.Printf("Found on thread %d: salt 0x%x = %s\n", i, foundSalt, foundAddress.Hex())
-				*stopPtr = true
+				mu.Lock()
+
+                var index big.Int
+
+                for j := range foundAddresses {
+                    if foundAddresses[j].targetPrefix.prefix == matchingPrefix.prefix {
+                        foundAddresses[j].address := foundAddress
+                        foundAddresses[j].salt := foundSalt
+                        break
+                    }
+                }
+
+                for j := range targetPrefixes {
+                    if targetPrefixes[j].prefix == matchingPrefix.prefix {
+                        *targetPrefixesPtr = append(targetPrefixes[:j], targetPrefixes[j+1:]...)
+                        break
+                    }
+                }
+
+				mu.Unlock()
 			}
-			wg.Done()
+
+			if len(targetPrefixes) == 0 {
+				*stopPtr = true
+			    wg.Done()
+            }
 		}(i)
 	}
 
@@ -133,6 +183,10 @@ func findVanitySalt(c *cli.Context) error {
 	wg.Wait()
 	end := time.Now()
 	elapsed := end.Sub(start)
+
+	for _, foundAddress := range foundAddresses {
+        fmt.Printf("Found for prefix %s: salt 0x%x = %s\n", foundAddress.prefix, foundAddress.salt, foundAddress.address.Hex())
+	}
 	fmt.Printf("Finished in %s\n", elapsed)
 
 	// Return
@@ -140,7 +194,7 @@ func findVanitySalt(c *cli.Context) error {
 
 }
 
-func runWorker(report bool, stop *bool, targetPrefix *big.Int, nodeAddress []byte, minipoolManagerAddress common.Address, initHash []byte, salt *big.Int, increment int64, shiftAmount uint) (*big.Int, common.Address) {
+func runWorker(report bool, stop *bool, targetPrefixes []*big.Int, nodeAddress []byte, minipoolManagerAddress common.Address, initHash []byte, salt *big.Int, increment int64) (*big.Int, common.Address, targetPrefixT) {
 	saltBytes := [32]byte{}
 	hashInt := big.NewInt(0)
 	incrementInt := big.NewInt(increment)
@@ -201,15 +255,18 @@ func runWorker(report bool, stop *bool, targetPrefix *big.Int, nodeAddress []byt
 		hasher.Read(addressResult[:])
 		hasher.Reset()
 
-		hashInt.SetBytes(addressResult[12:])
-		hashInt.Rsh(hashInt, shiftAmount*4)
-		if hashInt.Cmp(targetPrefix) == 0 {
-			if report {
-				close(tickerChan)
-			}
-			address := common.BytesToAddress(addressResult[12:])
-			return salt, address
-		}
+		for _, targetPrefix := range targetPrefixes {
+            hashInt.SetBytes(addressResult[12:])
+            hashInt.Rsh(hashInt, targetPrefix.shiftAmount*4)
+
+            if hashInt.Cmp(targetPrefix.prefix) == 0 {
+                if report {
+                    close(tickerChan)
+                }
+                address := common.BytesToAddress(addressResult[12:])
+                return salt, address, targetPrefix
+            }
+        }
 		salt.Add(salt, incrementInt)
 	}
 }
