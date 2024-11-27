@@ -129,6 +129,7 @@ func findVanitySalt(c *cli.Context) error {
 	nodeAddress := vanityArtifacts.NodeAddress.Bytes()
 	minipoolFactoryAddress := vanityArtifacts.MinipoolFactoryAddress
 	initHash := vanityArtifacts.InitHash.Bytes()
+	initTargetPrefixLen := uint(len(targetPrefixes))
 	targetPrefixesPtr := &targetPrefixes
 
 	// Run the search
@@ -147,7 +148,7 @@ func findVanitySalt(c *cli.Context) error {
 		workerSalt := big.NewInt(0).Add(salt, saltOffset)
 
 		go func(i int) {
-			foundSalt, foundAddress, matchingPrefix := runWorker(i == 0, stopPtr, targetPrefixes, nodeAddress, minipoolFactoryAddress, initHash, workerSalt, int64(threads))
+			foundSalt, foundAddress, matchingPrefix := runWorker(i == 0, stopPtr, targetPrefixes, nodeAddress, minipoolFactoryAddress, initHash, initTargetPrefixLen, workerSalt, int64(threads))
 
 			if foundSalt != nil {
 				mu.Lock()
@@ -192,7 +193,7 @@ func findVanitySalt(c *cli.Context) error {
 
 }
 
-func runWorker(report bool, stop *bool, targetPrefixes []*big.Int, nodeAddress []byte, minipoolManagerAddress common.Address, initHash []byte, salt *big.Int, increment int64) (*big.Int, common.Address, targetPrefixT) {
+func runWorker(report bool, stop *bool, targetPrefixes []*big.Int, nodeAddress []byte, minipoolManagerAddress common.Address, initHash []byte, initTargetPrefixLen uint, salt *big.Int, increment int64) (*big.Int, common.Address, targetPrefixT) {
 	saltBytes := [32]byte{}
 	hashInt := big.NewInt(0)
 	incrementInt := big.NewInt(increment)
@@ -216,7 +217,7 @@ func runWorker(report bool, stop *bool, targetPrefixes []*big.Int, nodeAddress [
 					delta := big.NewInt(0).Sub(salt, lastSalt)
 					deltaFloat, suffix := humanize.ComputeSI(float64(delta.Uint64()) / 5.0)
 					deltaString := humanize.FtoaWithDigits(deltaFloat, 2) + suffix
-					fmt.Printf("At salt 0x%x... %s (%s salts/sec)\n", salt, time.Since(start), deltaString)
+					fmt.Printf("At salt 0x%x... %s (%s salts/sec); Found %s of %s addresses\n", salt, time.Since(start), deltaString, initTargetPrefixLen - len(targetPrefixes), initTargetPrefixLen)
 					lastSalt.Set(salt)
 				case <-tickerChan:
 					ticker.Stop()
